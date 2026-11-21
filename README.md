@@ -1,6 +1,14 @@
 # JSI Automated Build & Functional Verification (`jsi-build-verify.yml`)
 
-A reusable GitHub Actions workflow that runs the **`jeffs-automated-build-deploy-agent`** skill via the headless **Pi Coding Agent** (`@earendil-works/pi-coding-agent`) on GitHub-hosted runners for any repository.
+[![Release](https://img.shields.io/github/v/release/jsoehner/jsi-build-verify?color=blue&logo=github)](https://github.com/jsoehner/jsi-build-verify/releases)
+[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Reusable%20Workflow-orange?logo=githubactions)](.github/workflows/jsi-build-verify.yml)
+[![Pi Agent](https://img.shields.io/badge/AI%20Agent-Pi%20Coding%20Agent-purple)](.github/workflows/jsi-build-verify.yml)
+[![Trusted OSS](https://img.shields.io/badge/Trusted%20OSS-mTLS%20Ready-brightgreen)](README.md)
+
+A self-contained reusable GitHub Actions workflow that runs the **`jeffs-automated-build-deploy-agent`** skill via the headless **Pi Coding Agent** (`@earendil-works/pi-coding-agent`) on GitHub-hosted runners for any repository.
+
+> [!WARNING]
+> **Cost of Operation:** Because this workflow invokes an LLM API (default `google` / `gemini-3.1-pro-preview`) once you configure your API key secret (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.), **every triggered run incurs real LLM API charges**. Observed end-to-end verification costs range from **~$0.23/run** (Rust/WASM, ~278k tokens) to **~$0.40/run** (Node.js/Express + API + browser checks, ~460k tokens). To control spend, consider using `model: gemini-2.5-flash` with `thinking: low`, triggering via `workflow_dispatch` only on high-churn repos, and setting API provider spend caps.
 
 ---
 
@@ -133,6 +141,41 @@ jobs:
 
 > [!IMPORTANT]
 > Because the agent executes build/test commands with `--no-approve` and has access to configured LLM secrets, only run `pull_request` triggers on trusted repositories (forked PRs are automatically skipped by the workflow guardrail).
+
+---
+
+## Automated Updates with Dependabot
+
+Add `.github/dependabot.yml` to your consumer repository to automatically open Pull Requests when new releases of `jsi-build-verify` are published:
+
+```yaml
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+```
+
+Dependabot detects tagged releases on `jsoehner/jsi-build-verify` and updates the 40-character commit SHA while preserving the semantic version comment. Remember to keep `with.workflow_ref` aligned with the pinned SHA or tag.
+
+---
+
+## Consumer Repository README Reference
+
+Mirroring `jsi-bom-actions`, add a concise reference block to consumer repository `README.md` files so contributors understand both the verification gate and its API billing implications:
+
+```markdown
+## 🤖 Automated Build & Functional Verification
+
+This repository integrates the [`jsoehner/jsi-build-verify`](https://github.com/jsoehner/jsi-build-verify) reusable GitHub Actions workflow ([`.github/workflows/verify.yml`](.github/workflows/verify.yml)) to automatically build, test, and functionally verify live behavior using an AI coding agent (Pi Agent) on pull requests and manual runs.
+
+> [!WARNING]
+> **Cost of Operation:** Configuring an LLM API key (`GEMINI_API_KEY` or another provider secret) incurs per-run API charges on every triggered PR or manual dispatch (typically **~$0.20–$0.45 per run** with `gemini-3.1-pro-preview`). Set provider spend limits, use a lighter model (e.g., `gemini-2.5-flash` with `thinking: low`), or restrict triggers to `workflow_dispatch` if you need tighter cost control.
+
+- **Latest Verification Report:** [`docs/BUILD_VERIFICATION.md`](docs/BUILD_VERIFICATION.md)
+- **Learn More:** [jsoehner/jsi-build-verify](https://github.com/jsoehner/jsi-build-verify)
+```
 
 ### Optional Per-Repo Config (`.jsi-verify.yml`)
 
