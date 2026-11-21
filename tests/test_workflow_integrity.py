@@ -83,6 +83,10 @@ def test_readme_caller_snippets_match_required_permissions() -> None:
             assert perms.get(key) == value, (
                 f"README caller snippet missing required permission {key}: {value} (got {perms.get(key)!r})"
             )
+        verify_job = parsed.get("jobs", {}).get("verify", {})
+        assert verify_job.get("secrets") != "inherit", (
+            "README caller snippet must use explicit secrets mapping instead of 'secrets: inherit' (least privilege)"
+        )
 
 
 def test_default_google_model_is_not_deprecated() -> None:

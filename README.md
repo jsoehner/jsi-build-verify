@@ -86,7 +86,11 @@ jobs:
       # provider: anthropic
       # model: claude-sonnet-4-5
       commit_mode: pr
-    secrets: inherit
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      # Optional: include if using Trusted OSS (jsigroup-oss) mTLS
+      OSS_MTLS_CLIENT_CERT: ${{ secrets.OSS_MTLS_CLIENT_CERT }}
+      OSS_MTLS_CLIENT_KEY: ${{ secrets.OSS_MTLS_CLIENT_KEY }}
 ```
 
 ### PR Test-Harness Mode (Gating Check + Sticky PR Comment)
@@ -109,7 +113,11 @@ jobs:
       commit_mode: report-only
       fail_on_error: true
       comment_on_pr: true
-    secrets: inherit
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      # Optional: include if using Trusted OSS (jsigroup-oss) mTLS
+      OSS_MTLS_CLIENT_CERT: ${{ secrets.OSS_MTLS_CLIENT_CERT }}
+      OSS_MTLS_CLIENT_KEY: ${{ secrets.OSS_MTLS_CLIENT_KEY }}
 ```
 
 > [!TIP]
