@@ -87,6 +87,8 @@ def parse_events(jsonl_path: Path) -> dict[str, Any]:
                     totals["stop_reason"] = str(msg["stopReason"])
                 if msg.get("errorMessage"):
                     totals["error_message"] = str(msg["errorMessage"])
+                elif msg.get("stopReason") != "error":
+                    totals["error_message"] = ""
                 add_usage(msg.get("usage"))
 
                 content = msg.get("content")
@@ -151,7 +153,31 @@ def render_markdown(
     return "\n".join(lines) + "\n"
 
 
-def main() -> int:
+def empty_stats() -> dict[str, Any]:
+    return {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "total_tokens": 0,
+        "cost_input_usd": 0.0,
+        "cost_output_usd": 0.0,
+        "cost_cache_read_usd": 0.0,
+        "cost_cache_write_usd": 0.0,
+        "cost_total_usd": 0.0,
+        "assistant_turns": 0,
+        "compactions": 0,
+        "tool_calls_total": 0,
+        "tool_calls_by_name": {},
+        "provider": "",
+        "model": "",
+        "stop_reason": "",
+        "error_message": "",
+        "final_text": "",
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Summarize Pi JSONL token usage.")
     parser.add_argument("jsonl", type=Path, help="Path to Pi --mode json output file")
     parser.add_argument("--provider", default="", help="Fallback provider name")
@@ -159,13 +185,14 @@ def main() -> int:
     parser.add_argument("--exit-code", type=int, default=None, help="Pi process exit code")
     parser.add_argument("--json-out", type=Path, default=None, help="Optional path to write JSON report")
     parser.add_argument("--md-out", type=Path, default=None, help="Optional path to write Markdown report")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    if not args.jsonl.exists():
+    if args.jsonl.exists():
+        stats = parse_events(args.jsonl)
+    else:
         print(f"[WARN] Pi JSONL file not found: {args.jsonl}", file=sys.stderr)
-        return 0
+        stats = empty_stats()
 
-    stats = parse_events(args.jsonl)
     md = render_markdown(stats, args.provider, args.model, args.exit_code)
 
     print(md)

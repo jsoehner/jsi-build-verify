@@ -23,6 +23,36 @@ on:
         required: false
         type: string
         default: "pr"
+      fail_on_error:
+        description: "Fail the workflow job when verification verdict is not 'pass' (recommended when used as a test harness)."
+        required: false
+        type: boolean
+        default: true
+      config_file:
+        description: "Optional per-repo verification config file path (read from target repo root if present)."
+        required: false
+        type: string
+        default: ".jsi-verify.yml"
+      custom_instructions:
+        description: "Optional extra build/test instructions appended to the verification prompt."
+        required: false
+        type: string
+        default: ""
+      comment_on_pr:
+        description: "Post or update a PR comment with the verification verdict and token usage when triggered on pull_request."
+        required: false
+        type: boolean
+        default: false
+      screenshot_mode:
+        description: "How to include browser screenshots in reports: artifact (default, link only) | docs (commit in docs/verification-screenshots/) | branch (inline via orphan jsi-verify-screenshots branch)"
+        required: false
+        type: string
+        default: "artifact"
+      pi_version:
+        description: "Version of @earendil-works/pi-coding-agent to install."
+        required: false
+        type: string
+        default: "1.6.0"
       use_trusted_oss:
         description: "Configure jsigroup-oss split-horizon mTLS registry when vars.TRUSTED_OSS_CACHE_URL is set."
         required: false
@@ -83,6 +113,12 @@ on:
         description: "Trusted OSS mTLS client private key PEM (from trusted-oss-github-setup)."
         required: false
     outputs:
+      verification_status:
+        description: "Structured verification verdict status (pass, fail, blocked, error)."
+        value: ${{ jobs.verify.outputs.verification_status }}
+      verification_summary:
+        description: "Short human-readable summary of the verification outcome."
+        value: ${{ jobs.verify.outputs.verification_summary }}
       input_tokens:
         description: "Total input tokens consumed by Pi."
         value: ${{ jobs.verify.outputs.input_tokens }}
@@ -134,6 +170,8 @@ on:
           - low
           - medium
           - high
+          - xhigh
+          - max
       commit_mode:
         description: "Verified docs mode"
         required: false
@@ -143,6 +181,25 @@ on:
           - pr
           - direct
           - report-only
+      screenshot_mode:
+        description: "Screenshot reporting mode"
+        required: false
+        type: choice
+        default: "artifact"
+        options:
+          - artifact
+          - docs
+          - branch
+      fail_on_error:
+        description: "Fail the workflow job if verification verdict is not 'pass'"
+        required: false
+        type: boolean
+        default: true
+      custom_instructions:
+        description: "Optional extra verification instructions for the agent"
+        required: false
+        type: string
+        default: ""
       use_trusted_oss:
         description: "Use jsigroup-oss Trusted OSS registry if TRUSTED_OSS_CACHE_URL is set"
         required: false
@@ -160,6 +217,8 @@ jobs:
     runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     timeout-minutes: ${{ inputs.timeout_minutes || 25 }}
     outputs:
+      verification_status: ${{ steps.verdict.outputs.verification_status }}
+      verification_summary: ${{ steps.verdict.outputs.verification_summary }}
       input_tokens: ${{ steps.usage.outputs.input_tokens }}
       output_tokens: ${{ steps.usage.outputs.output_tokens }}
       cache_read_tokens: ${{ steps.usage.outputs.cache_read_tokens }}
@@ -356,17 +415,22 @@ jobs:
 
       - name: Install Pi Coding Agent
         shell: bash
+        env:
+          PI_VERSION: ${{ inputs.pi_version || '1.6.0' }}
         run: |
-          npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+          npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}"
           pi --version
 
       - name: Run Pi Verification Agent (jeffs-automated-build-deploy-agent)
         id: pi_run
+        continue-on-error: true
         shell: bash
         env:
           PI_PROVIDER: ${{ steps.config.outputs.provider }}
           PI_MODEL: ${{ steps.config.outputs.model }}
           PI_THINKING: ${{ steps.config.outputs.thinking }}
+          CONFIG_FILE: ${{ inputs.config_file || '.jsi-verify.yml' }}
+          CUSTOM_INSTRUCTIONS: ${{ inputs.custom_instructions }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -380,7 +444,7 @@ jobs:
           set -uo pipefail
           mkdir -p /tmp/jsi-verify
 
-          SKILL_DIR="$GITHUB_WORKSPACE/.jsi-verify-tools/skills/jeffs-automated-build-deploy-agent"
+          export SKILL_DIR="$GITHUB_WORKSPACE/.jsi-verify-tools/skills/jeffs-automated-build-deploy-agent"
           API_KEY_ARGS=()
           if [[ -n "${PI_API_KEY:-}" ]]; then
             API_KEY_ARGS=(--api-key "$PI_API_KEY")
@@ -398,18 +462,32 @@ jobs:
             done
           fi
 
+          EXTRA_CONTEXT=""
+          if [[ -n "${CONFIG_FILE:-}" && -f "$GITHUB_WORKSPACE/$CONFIG_FILE" ]]; then
+            EXTRA_CONTEXT+=$'\n\n'"--- Target Repository Config (${CONFIG_FILE}) ---"$'\n'
+            EXTRA_CONTEXT+="$(cat "$GITHUB_WORKSPACE/$CONFIG_FILE")"
+          fi
+          if [[ -n "${CUSTOM_INSTRUCTIONS:-}" ]]; then
+            EXTRA_CONTEXT+=$'\n\n'"--- Caller Custom Instructions ---"$'\n'
+            EXTRA_CONTEXT+="${CUSTOM_INSTRUCTIONS}"
+          fi
+
           PROMPT="$(cat <<EOF
           You are running inside GitHub Actions CI for repository ${GITHUB_REPOSITORY} (checked out at ${GITHUB_WORKSPACE}).
           Follow the loaded jeffs-automated-build-deploy-agent skill in SINGLE-REPOSITORY CI MODE:
 
           1. Skip Step 0 (discover_top_repos.py) and Step 1 (git clone/pull) because the target repo is already checked out at ${GITHUB_WORKSPACE} and fork guardrails are enforced by the workflow.
           2. Skip Step 2 local LAN setup: if TRUSTED_OSS_ACTIVE=true, mTLS and registry env vars (MAVEN_OPTS, GRADLE_OPTS, PIP_INDEX_URL, PIP_CLIENT_CERT, UV_INDEX_URL, ~/.m2/settings.xml, ~/.oss-tls/client.crt|key|pem) are ALREADY configured for ${TRUSTED_OSS_ENDPOINT:-public registries}. Do NOT use http://oss.jsigroup.local:8080.
-          3. Execute Step 3 (Manifest-First Stack Detection & Workarounds) and Step 4 (Functional Verification: unit/integration tests, guided headless Chrome via ${SKILL_DIR}/scripts/browser_verify.py saving screenshots to /tmp/jsi-verify/, and curl API probes via ${SKILL_DIR}/scripts/api_verify.py).
-          4. Execute Step 5 (Verification-Gated Documentation Update) ONLY if the project builds and passes functional verification:
+          3. Execute Step 3 (Manifest-First Stack Detection & Workarounds) and Step 4 (Functional Verification: unit/integration tests, guided headless Chrome via ${SKILL_DIR}/scripts/browser_verify.py with --screenshot-dir /tmp/jsi-verify/screenshots, and curl API probes via ${SKILL_DIR}/scripts/api_verify.py).
+          4. ALWAYS write a structured JSON verdict to /tmp/jsi-verify/verdict.json before finishing, with exact schema:
+             {"status": "pass" | "fail" | "blocked", "summary": "concise summary", "checks": [{"name": "...", "status": "pass" | "fail" | "skip" | "blocked", "details": "..."}], "failure_reason": ""}
+             Set "status": "pass" ONLY if the build and functional checks genuinely succeeded.
+          5. Execute Step 5 (Verification-Gated Documentation Update) ONLY if verdict status is "pass":
              - Create/update docs/BUILD_VERIFICATION.md (dated $(date -u +%F), attributed to "Jeffs' Automated build and deploy agent" running via Pi Agent in GitHub Actions) and add/update the verification badge/link in README.md.
              - Do NOT run git commit or git push — the workflow handles committing/PR creation after verifying git hygiene.
-             - If the build or verification fails (e.g., genuine CVE 451 block, test failure, missing platform), do NOT modify README.md or docs/BUILD_VERIFICATION.md; explain the exact root cause and remediation clearly in your final response.
-          5. Execute Step 6 (Cleanup): stop any background servers/containers and remove any untracked temporary files in the repository root.
+             - If the build or verification fails (e.g., genuine CVE 451 block, test failure, missing platform), do NOT modify README.md or docs/BUILD_VERIFICATION.md; explain the exact root cause and remediation clearly in /tmp/jsi-verify/verdict.json and your final response.
+          6. Execute Step 6 (Cleanup): stop any background servers/containers and remove any untracked temporary files in the repository root.
+          ${EXTRA_CONTEXT}
           EOF
           )"
 
@@ -436,9 +514,65 @@ jobs:
           fi
           exit "$PI_EXIT"
 
+      - name: Publish Screenshots to Orphan Branch (branch mode)
+        id: screenshot_branch
+        if: ${{ always() && steps.config.outcome == 'success' && inputs.screenshot_mode == 'branch' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t PNGS < <(find /tmp/jsi-verify -type f -name '*.png' | sort)
+          if [[ "${#PNGS[@]}" -eq 0 ]]; then
+            echo "[INFO] No PNG screenshots found to publish."
+            exit 0
+          fi
+
+          ASSET_BRANCH="jsi-verify-screenshots"
+          ASSET_DIR="/tmp/jsi-verify-assets-repo"
+          rm -rf "$ASSET_DIR"
+          mkdir -p "$ASSET_DIR/${GITHUB_RUN_ID}"
+          for png in "${PNGS[@]}"; do
+            cp "$png" "$ASSET_DIR/${GITHUB_RUN_ID}/$(basename "$png")"
+          done
+
+          REMOTE_URL="$(git remote get-url origin)"
+          (
+            cd "$ASSET_DIR"
+            git init -q -b "$ASSET_BRANCH"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .
+            git commit -q -m "chore(verify): screenshots for run ${GITHUB_RUN_ID}"
+            git remote add origin "$REMOTE_URL"
+            git push --force origin "$ASSET_BRANCH"
+          )
+          rm -rf "$ASSET_DIR"
+
+          echo "base_url=https://github.com/${GITHUB_REPOSITORY}/blob/${ASSET_BRANCH}/${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+          echo "url_suffix=?raw=true" >> "$GITHUB_OUTPUT"
+
+      - name: Evaluate Verification Verdict
+        id: verdict
+        if: ${{ always() && steps.config.outcome == 'success' }}
+        shell: bash
+        env:
+          SCREENSHOT_BASE_URL: ${{ steps.screenshot_branch.outputs.base_url }}
+          SCREENSHOT_URL_SUFFIX: ${{ steps.screenshot_branch.outputs.url_suffix }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/.jsi-verify-tools/scripts/evaluate_verdict.py" \
+            /tmp/jsi-verify/verdict.json \
+            --pi-exit-code "${{ steps.pi_run.outputs.exit_code || 1 }}" \
+            --screenshots-dir /tmp/jsi-verify \
+            --screenshot-base-url "${SCREENSHOT_BASE_URL}" \
+            --screenshot-url-suffix "${SCREENSHOT_URL_SUFFIX}" \
+            --artifact-url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}#artifacts" \
+            --json-out /tmp/jsi-verify/verdict-normalized.json \
+            --md-out /tmp/jsi-verify/verdict.md
+
       - name: Report Token Consumption & Verification Summary
         id: usage
-        if: always()
+        if: ${{ always() && steps.config.outcome == 'success' }}
         shell: bash
         run: |
           python3 "$GITHUB_WORKSPACE/.jsi-verify-tools/scripts/summarize_pi_usage.py" \
@@ -450,25 +584,53 @@ jobs:
             --md-out /tmp/jsi-verify/token-usage.md
 
       - name: Publish Verification Documentation (Gated & Hygiene-Checked)
-        if: ${{ steps.pi_run.outcome == 'success' && steps.config.outputs.commit_mode != 'report-only' }}
+        if: ${{ steps.verdict.outputs.verification_status == 'pass' && steps.config.outputs.commit_mode != 'report-only' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           COMMIT_MODE: ${{ steps.config.outputs.commit_mode }}
+          SCREENSHOT_MODE: ${{ inputs.screenshot_mode || 'artifact' }}
           TOTAL_TOKENS: ${{ steps.usage.outputs.total_tokens || '0' }}
           EST_COST: ${{ steps.usage.outputs.estimated_cost_usd || '0' }}
         run: |
           set -euo pipefail
-          CHANGED="$(git status --porcelain -- docs/BUILD_VERIFICATION.md README.md)"
+          STAGED_PATHS=(docs/BUILD_VERIFICATION.md README.md)
+
+          if [[ "$SCREENSHOT_MODE" == "docs" ]]; then
+            mapfile -t PNGS < <(find /tmp/jsi-verify -type f -name '*.png' | sort)
+            if [[ "${#PNGS[@]}" -gt 0 ]]; then
+              mkdir -p docs/verification-screenshots
+              for png in "${PNGS[@]}"; do
+                cp "$png" "docs/verification-screenshots/$(basename "$png")"
+              done
+              STAGED_PATHS+=(docs/verification-screenshots)
+              if [[ -f docs/BUILD_VERIFICATION.md ]] && ! grep -q "verification-screenshots/" docs/BUILD_VERIFICATION.md; then
+                {
+                  echo ""
+                  echo "## Screenshots"
+                  echo ""
+                  for png in "${PNGS[@]}"; do
+                    fname="$(basename "$png")"
+                    echo "### \`${fname}\`"
+                    echo ""
+                    echo "![${fname}](verification-screenshots/${fname})"
+                    echo ""
+                  done
+                } >> docs/BUILD_VERIFICATION.md
+              fi
+            fi
+          fi
+
+          CHANGED="$(git status --porcelain -- "${STAGED_PATHS[@]}")"
           if [[ -z "$CHANGED" ]]; then
             echo "[INFO] No verification documentation updates detected; skipping commit/PR."
             exit 0
           fi
 
           # Ensure zero unintended/sensitive files are staged
-          git add -- docs/BUILD_VERIFICATION.md README.md 2>/dev/null || true
+          git add -- "${STAGED_PATHS[@]}" 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "[INFO] No staged changes in docs/BUILD_VERIFICATION.md or README.md."
+            echo "[INFO] No staged changes in verification documentation."
             exit 0
           fi
 
@@ -487,7 +649,7 @@ jobs:
             git commit -m "$COMMIT_MSG"
             git push --force-with-lease origin "$BRANCH"
 
-            PR_BODY="$(cat /tmp/jsi-verify/token-usage.md 2>/dev/null || echo "Automated verification completed on ${TODAY}.")"
+            PR_BODY="$(cat /tmp/jsi-verify/verdict.md /tmp/jsi-verify/token-usage.md 2>/dev/null || echo "Automated verification completed on ${TODAY}.")"
             if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
               gh pr edit "$BRANCH" --title "docs(verification): ${TODAY} functional build verification" --body "$PR_BODY"
             else
@@ -499,16 +661,58 @@ jobs:
             fi
           fi
 
+      - name: Post Verdict Comment on Pull Request
+        if: ${{ always() && steps.config.outcome == 'success' && inputs.comment_on_pr == true && github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          MARKER="<!-- jsi-build-verify-report -->"
+          BODY="${MARKER}"$'\n'
+          if [[ -f /tmp/jsi-verify/verdict.md ]]; then
+            BODY+="$(cat /tmp/jsi-verify/verdict.md)"$'\n'
+          fi
+          if [[ -f /tmp/jsi-verify/token-usage.md ]]; then
+            BODY+="$(cat /tmp/jsi-verify/token-usage.md)"$'\n'
+          fi
+
+          EXISTING_ID="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" | head -n 1 || true)"
+          if [[ -n "$EXISTING_ID" ]]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${EXISTING_ID}" -f body="$BODY" >/dev/null
+          else
+            gh pr comment "$PR_NUMBER" --body "$BODY"
+          fi
+
       - name: Upload Verification & Token Usage Artifacts
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: jsi-build-verify-${{ github.run_id }}
           path: |
+            /tmp/jsi-verify/verdict.json
+            /tmp/jsi-verify/verdict-normalized.json
+            /tmp/jsi-verify/verdict.md
             /tmp/jsi-verify/token-usage.json
             /tmp/jsi-verify/token-usage.md
             /tmp/jsi-verify/pi-events.jsonl
             /tmp/jsi-verify/*.png
+            /tmp/jsi-verify/screenshots/*.png
             docs/BUILD_VERIFICATION.md
           if-no-files-found: ignore
           retention-days: 30
+
+      - name: Enforce Verification Verdict
+        if: ${{ always() && steps.config.outcome == 'success' && inputs.fail_on_error != false }}
+        shell: bash
+        env:
+          VERDICT_STATUS: ${{ steps.verdict.outputs.verification_status || 'error' }}
+          VERDICT_SUMMARY: ${{ steps.verdict.outputs.verification_summary || 'Missing verification verdict' }}
+        run: |
+          if [[ "$VERDICT_STATUS" != "pass" ]]; then
+            echo "::error title=JSI Build Verification Failed (${VERDICT_STATUS})::${VERDICT_SUMMARY}"
+            exit 1
+          fi
+          echo "[OK] Verification verdict passed: ${VERDICT_SUMMARY}"

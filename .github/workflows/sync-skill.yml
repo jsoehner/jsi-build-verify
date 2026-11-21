@@ -1,0 +1,84 @@
+name: Sync Skill to skills-backup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "skills/jeffs-automated-build-deploy-agent/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Test & Sync jeffs-automated-build-deploy-agent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout jsi-build-verify
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+
+      - name: Run Harness Self-Tests Before Sync
+        run: |
+          uv run --no-project --with ruff ruff check scripts skills tests
+          uv run --no-project --with pytest --with pyyaml pytest -v
+
+      - name: Check SKILLS_BACKUP_TOKEN availability
+        id: token_check
+        shell: bash
+        env:
+          SKILLS_BACKUP_TOKEN: ${{ secrets.SKILLS_BACKUP_TOKEN }}
+        run: |
+          if [[ -z "${SKILLS_BACKUP_TOKEN:-}" ]]; then
+            echo "::notice title=SKILLS_BACKUP_TOKEN not configured::Add a fine-grained PAT secret named SKILLS_BACKUP_TOKEN (with contents:write & pull-requests:write on jsoehner/skills-backup) to enable automatic sync."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout jsoehner/skills-backup
+        if: ${{ steps.token_check.outputs.available == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: jsoehner/skills-backup
+          ref: main
+          path: .skills-backup
+          token: ${{ secrets.SKILLS_BACKUP_TOKEN }}
+
+      - name: Sync jeffs-automated-build-deploy-agent and Open PR
+        if: ${{ steps.token_check.outputs.available == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SKILLS_BACKUP_TOKEN }}
+        run: |
+          set -euo pipefail
+          rsync -a --delete --exclude='__pycache__' --exclude='*.py[cod]' \
+            skills/jeffs-automated-build-deploy-agent/ \
+            .skills-backup/jeffs-automated-build-deploy-agent/
+
+          cd .skills-backup
+          if git status --porcelain -- jeffs-automated-build-deploy-agent | grep -q .; then
+            BRANCH="sync/jeffs-automated-build-deploy-agent"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git checkout -B "$BRANCH"
+            git add -- jeffs-automated-build-deploy-agent
+            git commit -m "chore(skill): sync jeffs-automated-build-deploy-agent from jsi-build-verify@${GITHUB_SHA::7}"
+            git push --force-with-lease origin "$BRANCH"
+
+            BODY="Automated sync of \`jeffs-automated-build-deploy-agent\` from \`${GITHUB_REPOSITORY}@${GITHUB_SHA}\` after passing \`jsi-build-verify\` self-tests."
+            if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+              gh pr edit "$BRANCH" --body "$BODY"
+            else
+              gh pr create \
+                --base main \
+                --head "$BRANCH" \
+                --title "chore(skill): sync jeffs-automated-build-deploy-agent" \
+                --body "$BODY"
+            fi
+          else
+            echo "[INFO] jsoehner/skills-backup is already up to date."
+          fi

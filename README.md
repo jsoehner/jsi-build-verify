@@ -43,18 +43,23 @@ Traditional CI pipelines require custom per-repository build, start, and smoke-t
      ```
    - Pi executes Steps 3–6 of `jeffs-automated-build-deploy-agent` in single-repository CI mode (skipping repo discovery, git clone/pull, and LAN-only `.local` URLs) and streams structured JSONL events to `/tmp/jsi-verify/pi-events.jsonl`.
    - Pi is explicitly instructed **not** to run `git commit` or `git push`.
-6. **Token Consumption & Cost Report (`if: always()`)**:
+6. **Structured Verdict & Pass/Fail Gating (`if: always()`)**:
+   - The agent writes `/tmp/jsi-verify/verdict.json` (`status: pass | fail | blocked`, `summary`, `checks`, `failure_reason`).
+   - Runs `scripts/evaluate_verdict.py` to normalize the verdict, publish a Markdown verdict table to `$GITHUB_STEP_SUMMARY`, and expose `verification_status` and `verification_summary` as workflow outputs.
+   - When `fail_on_error: true` *(default)*, the final step fails the job if `verification_status != 'pass'`, preventing false-green CI checks when the agent exits cleanly after reporting a build/test failure.
+7. **Token Consumption & Cost Report (`if: always()`)**:
    - Runs `scripts/summarize_pi_usage.py` over `pi-events.jsonl` to aggregate every assistant turn and compaction event.
    - Publishes a Markdown table (Input, Output, Cache Read, Cache Write, Total Tokens, Estimated USD Cost, Assistant Turns, and Tool Call Breakdown) to `$GITHUB_STEP_SUMMARY`, job logs, reusable workflow outputs, and `/tmp/jsi-verify/token-usage.{json,md}`.
-7. **Hygiene-Checked Documentation Publishing**:
-   - Runs only if Pi succeeded and `commit_mode != report-only`.
+8. **Hygiene-Checked Documentation Publishing & Optional PR Commenting**:
+   - Runs only if `verification_status == 'pass'` and `commit_mode != report-only`.
    - Stages **exclusively** `docs/BUILD_VERIFICATION.md` and `README.md`.
    - Depending on `commit_mode`:
-     - `pr` *(default)*: Force-updates branch `docs/jsi-build-verify` and opens/updates a PR containing the token usage report in the PR body.
+     - `pr` *(default)*: Force-updates branch `docs/jsi-build-verify` and opens/updates a PR containing the verdict and token usage report in the PR body.
      - `direct`: Commits with `[skip ci]` and pushes directly to the current branch.
      - `report-only`: Skips git commits/PRs and uploads outputs as artifacts only.
-8. **Artifact Upload (`if: always()`)**:
-   - Uploads `token-usage.json`, `token-usage.md`, `pi-events.jsonl`, any headless Chrome screenshots (`/tmp/jsi-verify/*.png`), and `docs/BUILD_VERIFICATION.md` (30-day retention).
+   - When `comment_on_pr: true` on `pull_request` events, posts or updates a sticky PR comment with the verdict and token usage summary.
+9. **Artifact Upload (`if: always()`)**:
+   - Uploads `verdict.json`, `verdict-normalized.json`, `verdict.md`, `token-usage.json`, `token-usage.md`, `pi-events.jsonl`, any headless Chrome screenshots (`/tmp/jsi-verify/*.png`), and `docs/BUILD_VERIFICATION.md` (30-day retention).
 
 ---
 
@@ -84,6 +89,48 @@ jobs:
     secrets: inherit
 ```
 
+### PR Test-Harness Mode (Gating Check + Sticky PR Comment)
+
+```yaml
+name: Functional Verification
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  verify:
+    uses: jsoehner/jsi-build-verify/.github/workflows/jsi-build-verify.yml@main
+    with:
+      commit_mode: report-only
+      fail_on_error: true
+      comment_on_pr: true
+    secrets: inherit
+```
+
+> [!IMPORTANT]
+> Because the agent executes build/test commands with `--no-approve` and has access to configured LLM secrets, only run `pull_request` triggers on trusted repositories (forked PRs are automatically skipped by the workflow guardrail).
+
+### Optional Per-Repo Config (`.jsi-verify.yml`)
+
+Add an optional `.jsi-verify.yml` (or override via `config_file`) in any target repository to make verification faster and more deterministic:
+
+```yaml
+build: "npm ci && npm run build"
+test: "npm test"
+start: "PORT=13001 npm start"
+checks:
+  browser:
+    - url: "http://127.0.0.1:13001/"
+      expect: "Dashboard"
+      click: ["#login-demo"]
+  api:
+    - "http://127.0.0.1:13001/health"
+    - "http://127.0.0.1:13001/admin=403"
+```
+
 ### Configuration Reference
 
 #### Inputs (`with:`)
@@ -93,10 +140,16 @@ jobs:
 | `model` | `""` (`vars.PI_MODEL` → provider default) | Model ID (default for `google`: `gemini-2.5-pro`). |
 | `thinking` | `medium` | Pi reasoning level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). |
 | `commit_mode` | `pr` | Verified doc handling: `pr`, `direct`, or `report-only`. |
+| `fail_on_error` | `true` | Fail the workflow job when `verification_status != 'pass'`. |
+| `config_file` | `.jsi-verify.yml` | Optional per-repo verification config file read from the target repo root if present. |
+| `custom_instructions` | `""` | Optional extra instructions appended to the verification prompt. |
+| `comment_on_pr` | `false` | Post/update a sticky PR comment with verdict and token usage on `pull_request` events. |
+| `screenshot_mode` | `artifact` | Browser screenshot reporting: `artifact` (upload + link in report), `docs` (commit to `docs/verification-screenshots/`), or `branch` (inline images via orphan `jsi-verify-screenshots` branch). |
+| `pi_version` | `1.6.0` | Pinned `@earendil-works/pi-coding-agent` npm version. |
 | `use_trusted_oss` | `true` | Enable `jsigroup-oss` mTLS bootstrap when `vars.TRUSTED_OSS_CACHE_URL` is set. |
 | `runner` | `ubuntu-latest` | GitHub Actions runner label (use `macos-latest` for Xcode/iOS/macOS repos). |
 | `timeout_minutes` | `25` | Hard job timeout in minutes. |
-| `workflow_repo` / `workflow_ref` | `jsoehner/jsi-build-verify` / `main` | Self-contained repository and ref providing the bundled skill, `AGENTS.md`, `rules/`, and `scripts/summarize_pi_usage.py`. |
+| `workflow_repo` / `workflow_ref` | `jsoehner/jsi-build-verify` / `main` | Self-contained repository and ref providing the bundled skill, `AGENTS.md`, `rules/`, and `scripts/`. |
 
 #### Secrets & Variables
 | Name | Kind | Required | Purpose |
@@ -109,7 +162,7 @@ jobs:
 | `TRUSTED_OSS_CACHE_URL` / `TRUSTED_OSS_MODE` / `TRUSTED_OSS_GPG_EMAIL` | Variable | Optional | Split-horizon Trusted OSS settings (from `trusted-oss-github-setup`). |
 
 #### Outputs
-`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `estimated_cost_usd`.
+`verification_status`, `verification_summary`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `estimated_cost_usd`.
 
 ---
 

@@ -1,0 +1,26 @@
+name: Harness Self-Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Pytest & Ruff Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+
+      - name: Run Ruff lint
+        run: uv run --with ruff ruff check scripts skills tests
+
+      - name: Run Pytest suite
+        run: uv run --with pytest --with pyyaml pytest -v
