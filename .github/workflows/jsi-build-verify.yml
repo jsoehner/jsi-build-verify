@@ -584,6 +584,14 @@ jobs:
             --json-out /tmp/jsi-verify/token-usage.json \
             --md-out /tmp/jsi-verify/token-usage.md
 
+      - name: Check for Gitleaks FPs
+        if: ${{ steps.verdict.outputs.verification_status == 'pass' && steps.config.outputs.commit_mode != 'report-only' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/.jsi-verify-tools/scripts/check_doc_hygiene.py" \
+            --fix docs/BUILD_VERIFICATION.md README.md
+
       - name: Publish Verification Documentation (Gated & Hygiene-Checked)
         if: ${{ steps.verdict.outputs.verification_status == 'pass' && steps.config.outputs.commit_mode != 'report-only' }}
         shell: bash
@@ -596,9 +604,6 @@ jobs:
         run: |
           set -euo pipefail
           STAGED_PATHS=(docs/BUILD_VERIFICATION.md README.md)
-
-          python3 "$GITHUB_WORKSPACE/.jsi-verify-tools/scripts/check_doc_hygiene.py" \
-            --fix docs/BUILD_VERIFICATION.md README.md
 
           if [[ "$SCREENSHOT_MODE" == "docs" ]]; then
             mapfile -t PNGS < <(find /tmp/jsi-verify -type f -name '*.png' | sort)
