@@ -50,6 +50,7 @@ def test_workflow_actions_are_sha_pinned() -> None:
 
 def test_all_python_scripts_compile_cleanly() -> None:
     py_files = [
+        REPO_ROOT / "scripts" / "check_doc_hygiene.py",
         REPO_ROOT / "scripts" / "summarize_pi_usage.py",
         REPO_ROOT / "scripts" / "evaluate_verdict.py",
         REPO_ROOT / "skills" / "jeffs-automated-build-deploy-agent" / "scripts" / "api_verify.py",

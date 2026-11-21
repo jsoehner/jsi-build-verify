@@ -484,6 +484,7 @@ jobs:
              Set "status": "pass" ONLY if the build and functional checks genuinely succeeded.
           5. Execute Step 5 (Verification-Gated Documentation Update) ONLY if verdict status is "pass":
              - Create/update docs/BUILD_VERIFICATION.md (dated $(date -u +%F), attributed to "Jeffs' Automated build and deploy agent" running via Pi Agent in GitHub Actions) and add/update the verification badge/link in README.md.
+             - Keep docs/BUILD_VERIFICATION.md secret-scanner-safe: describe crypto/API outputs in plain prose (e.g., "TLS hybrid PQC key exchange (X25519MLKEM768) verified") instead of raw key="value" / key: "value" JSON fragments that trigger Gitleaks generic-api-key false positives.
              - Do NOT run git commit or git push — the workflow handles committing/PR creation after verifying git hygiene.
              - If the build or verification fails (e.g., genuine CVE 451 block, test failure, missing platform), do NOT modify README.md or docs/BUILD_VERIFICATION.md; explain the exact root cause and remediation clearly in /tmp/jsi-verify/verdict.json and your final response.
           6. Execute Step 6 (Cleanup): stop any background servers/containers and remove any untracked temporary files in the repository root.
@@ -595,6 +596,9 @@ jobs:
         run: |
           set -euo pipefail
           STAGED_PATHS=(docs/BUILD_VERIFICATION.md README.md)
+
+          python3 "$GITHUB_WORKSPACE/.jsi-verify-tools/scripts/check_doc_hygiene.py" \
+            --fix docs/BUILD_VERIFICATION.md README.md
 
           if [[ "$SCREENSHOT_MODE" == "docs" ]]; then
             mapfile -t PNGS < <(find /tmp/jsi-verify -type f -name '*.png' | sort)
