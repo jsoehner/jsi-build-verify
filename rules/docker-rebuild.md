@@ -1,0 +1,2 @@
+# Rule: Docker Rebuild Prompt
+When modifying code for a project that is currently running in a Docker container, do not automatically assume the container was built from local source or the local registry. Do not automatically rebuild or restart running containers (e.g., via local build scripts or docker-compose) without explicitly asking the user first, as they may be running a remote or production image that shouldn't be overwritten locally.

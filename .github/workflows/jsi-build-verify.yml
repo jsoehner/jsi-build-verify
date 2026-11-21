@@ -1,0 +1,514 @@
+name: JSI Automated Build & Functional Verification (Pi Agent)
+
+on:
+  workflow_call:
+    inputs:
+      provider:
+        description: "Pi LLM provider ID (e.g. google, anthropic, openai, openrouter, deepseek, mistral, groq, xai). Falls back to vars.PI_PROVIDER, then 'google'."
+        required: false
+        type: string
+        default: ""
+      model:
+        description: "Pi model ID (e.g. gemini-2.5-pro, gemini-2.5-flash, claude-sonnet-4-5, gpt-5). Falls back to vars.PI_MODEL, then 'gemini-2.5-pro' for google."
+        required: false
+        type: string
+        default: ""
+      thinking:
+        description: "Pi thinking level (off, minimal, low, medium, high, xhigh, max)."
+        required: false
+        type: string
+        default: "medium"
+      commit_mode:
+        description: "How to handle verified docs (docs/BUILD_VERIFICATION.md + README.md): pr | direct | report-only"
+        required: false
+        type: string
+        default: "pr"
+      use_trusted_oss:
+        description: "Configure jsigroup-oss split-horizon mTLS registry when vars.TRUSTED_OSS_CACHE_URL is set."
+        required: false
+        type: boolean
+        default: true
+      runner:
+        description: "GitHub Actions runner label (e.g. ubuntu-latest, macos-latest)."
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      timeout_minutes:
+        description: "Maximum runtime in minutes for the verification job."
+        required: false
+        type: number
+        default: 25
+      workflow_repo:
+        description: "GitHub repository hosting this self-contained workflow, skill, rules, and scripts."
+        required: false
+        type: string
+        default: "jsoehner/jsi-build-verify"
+      workflow_ref:
+        description: "Branch, tag, or SHA of the workflow repository."
+        required: false
+        type: string
+        default: "main"
+    secrets:
+      GEMINI_API_KEY:
+        description: "Google Gemini API key (required by default when provider is google/gemini)."
+        required: false
+      ANTHROPIC_API_KEY:
+        description: "Anthropic API key (required when provider is anthropic)."
+        required: false
+      OPENAI_API_KEY:
+        description: "OpenAI API key (required when provider is openai)."
+        required: false
+      OPENROUTER_API_KEY:
+        description: "OpenRouter API key (required when provider is openrouter)."
+        required: false
+      DEEPSEEK_API_KEY:
+        description: "DeepSeek API key (required when provider is deepseek)."
+        required: false
+      MISTRAL_API_KEY:
+        description: "Mistral API key (required when provider is mistral)."
+        required: false
+      GROQ_API_KEY:
+        description: "Groq API key (required when provider is groq)."
+        required: false
+      XAI_API_KEY:
+        description: "xAI API key (required when provider is xai)."
+        required: false
+      PI_API_KEY:
+        description: "Optional generic API key fallback for any configured provider."
+        required: false
+      OSS_MTLS_CLIENT_CERT:
+        description: "Trusted OSS mTLS client certificate PEM (from trusted-oss-github-setup)."
+        required: false
+      OSS_MTLS_CLIENT_KEY:
+        description: "Trusted OSS mTLS client private key PEM (from trusted-oss-github-setup)."
+        required: false
+    outputs:
+      input_tokens:
+        description: "Total input tokens consumed by Pi."
+        value: ${{ jobs.verify.outputs.input_tokens }}
+      output_tokens:
+        description: "Total output tokens consumed by Pi."
+        value: ${{ jobs.verify.outputs.output_tokens }}
+      cache_read_tokens:
+        description: "Total cache-read tokens consumed by Pi."
+        value: ${{ jobs.verify.outputs.cache_read_tokens }}
+      cache_write_tokens:
+        description: "Total cache-write tokens consumed by Pi."
+        value: ${{ jobs.verify.outputs.cache_write_tokens }}
+      total_tokens:
+        description: "Total tokens consumed by Pi."
+        value: ${{ jobs.verify.outputs.total_tokens }}
+      estimated_cost_usd:
+        description: "Estimated LLM API cost in USD."
+        value: ${{ jobs.verify.outputs.estimated_cost_usd }}
+
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Pi LLM provider (default: google / Gemini)"
+        required: false
+        type: choice
+        default: "google"
+        options:
+          - google
+          - anthropic
+          - openai
+          - openrouter
+          - deepseek
+          - mistral
+          - groq
+          - xai
+      model:
+        description: "Pi model ID (leave blank for provider default, e.g. gemini-2.5-pro)"
+        required: false
+        type: string
+        default: ""
+      thinking:
+        description: "Thinking level"
+        required: false
+        type: choice
+        default: "medium"
+        options:
+          - "off"
+          - minimal
+          - low
+          - medium
+          - high
+      commit_mode:
+        description: "Verified docs mode"
+        required: false
+        type: choice
+        default: "pr"
+        options:
+          - pr
+          - direct
+          - report-only
+      use_trusted_oss:
+        description: "Use jsigroup-oss Trusted OSS registry if TRUSTED_OSS_CACHE_URL is set"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  verify:
+    name: Build & Functional Verify (Pi Agent)
+    if: ${{ !github.event.repository.fork && github.actor != 'github-actions[bot]' }}
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    timeout-minutes: ${{ inputs.timeout_minutes || 25 }}
+    outputs:
+      input_tokens: ${{ steps.usage.outputs.input_tokens }}
+      output_tokens: ${{ steps.usage.outputs.output_tokens }}
+      cache_read_tokens: ${{ steps.usage.outputs.cache_read_tokens }}
+      cache_write_tokens: ${{ steps.usage.outputs.cache_write_tokens }}
+      total_tokens: ${{ steps.usage.outputs.total_tokens }}
+      estimated_cost_usd: ${{ steps.usage.outputs.estimated_cost_usd }}
+
+    steps:
+      - name: Validate Provider, Model & Required API Key Secret
+        id: config
+        shell: bash
+        env:
+          INPUT_PROVIDER: ${{ inputs.provider }}
+          INPUT_MODEL: ${{ inputs.model }}
+          INPUT_THINKING: ${{ inputs.thinking }}
+          INPUT_COMMIT_MODE: ${{ inputs.commit_mode }}
+          VAR_PROVIDER: ${{ vars.PI_PROVIDER }}
+          VAR_MODEL: ${{ vars.PI_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          PI_API_KEY: ${{ secrets.PI_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          RAW_PROVIDER="${INPUT_PROVIDER:-${VAR_PROVIDER:-google}}"
+          PROVIDER="$(echo "$RAW_PROVIDER" | tr '[:upper:]' '[:lower:]')"
+          if [[ "$PROVIDER" == "gemini" ]]; then
+            PROVIDER="google"
+          fi
+
+          MODEL="${INPUT_MODEL:-${VAR_MODEL:-}}"
+          if [[ -z "$MODEL" ]]; then
+            case "$PROVIDER" in
+              google)     MODEL="gemini-2.5-pro" ;;
+              anthropic)  MODEL="claude-sonnet-4-5" ;;
+              openai)     MODEL="gpt-5" ;;
+              openrouter) MODEL="google/gemini-2.5-pro" ;;
+              deepseek)   MODEL="deepseek-chat" ;;
+              mistral)    MODEL="mistral-large-latest" ;;
+              groq)       MODEL="llama-3.3-70b-versatile" ;;
+              xai)        MODEL="grok-3" ;;
+              *)
+                echo "::error title=Missing Model for Provider '$PROVIDER'::Set inputs.model or repository variable PI_MODEL when using custom provider '$PROVIDER'."
+                exit 1
+                ;;
+            esac
+          fi
+
+          THINKING="${INPUT_THINKING:-medium}"
+          COMMIT_MODE="${INPUT_COMMIT_MODE:-pr}"
+
+          case "$PROVIDER" in
+            google)     EXPECTED_SECRET="GEMINI_API_KEY";     RESOLVED_KEY="${GEMINI_API_KEY:-}" ;;
+            anthropic)  EXPECTED_SECRET="ANTHROPIC_API_KEY";  RESOLVED_KEY="${ANTHROPIC_API_KEY:-}" ;;
+            openai)     EXPECTED_SECRET="OPENAI_API_KEY";     RESOLVED_KEY="${OPENAI_API_KEY:-}" ;;
+            openrouter) EXPECTED_SECRET="OPENROUTER_API_KEY"; RESOLVED_KEY="${OPENROUTER_API_KEY:-}" ;;
+            deepseek)   EXPECTED_SECRET="DEEPSEEK_API_KEY";   RESOLVED_KEY="${DEEPSEEK_API_KEY:-}" ;;
+            mistral)    EXPECTED_SECRET="MISTRAL_API_KEY";    RESOLVED_KEY="${MISTRAL_API_KEY:-}" ;;
+            groq)       EXPECTED_SECRET="GROQ_API_KEY";       RESOLVED_KEY="${GROQ_API_KEY:-}" ;;
+            xai)        EXPECTED_SECRET="XAI_API_KEY";        RESOLVED_KEY="${XAI_API_KEY:-}" ;;
+            *)          EXPECTED_SECRET="PI_API_KEY";         RESOLVED_KEY="" ;;
+          esac
+
+          if [[ -z "$RESOLVED_KEY" && -n "${PI_API_KEY:-}" ]]; then
+            RESOLVED_KEY="$PI_API_KEY"
+          fi
+
+          if [[ -z "$RESOLVED_KEY" ]]; then
+            cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## ❌ Configuration Required: Missing GitHub Secret (\`${EXPECTED_SECRET}\`)
+
+          The **JSI Automated Build & Functional Verification** workflow cannot run because the API key for provider **\`${PROVIDER}\`** (model \`${MODEL}\`) is not configured.
+
+          ### How to Fix
+          1. Go to **Settings → Secrets and variables → Actions → Secrets** in \`${GITHUB_REPOSITORY}\` (or your GitHub Organization).
+          2. Create a secret named **\`${EXPECTED_SECRET}\`** (or generic fallback \`PI_API_KEY\`) with a valid API key.
+          3. Ensure your calling workflow passes secrets to this reusable workflow using \`secrets: inherit\` (or explicitly maps \`${EXPECTED_SECRET}\`).
+
+          > **Tip:** To use a different LLM provider or model, set \`with.provider\` / \`with.model\` in your caller workflow or define repository variables \`PI_PROVIDER\` and \`PI_MODEL\`.
+          EOF
+            echo "::error title=Missing Required GitHub Secret (${EXPECTED_SECRET})::Provider '${PROVIDER}' (model '${MODEL}') requires the GitHub Actions secret '${EXPECTED_SECRET}' (or 'PI_API_KEY') to be configured before this workflow is functional. Add it under Settings -> Secrets and variables -> Actions and pass 'secrets: inherit' in your calling workflow."
+            exit 1
+          fi
+
+          echo "provider=${PROVIDER}" >> "$GITHUB_OUTPUT"
+          echo "model=${MODEL}" >> "$GITHUB_OUTPUT"
+          echo "thinking=${THINKING}" >> "$GITHUB_OUTPUT"
+          echo "commit_mode=${COMMIT_MODE}" >> "$GITHUB_OUTPUT"
+          echo "expected_secret=${EXPECTED_SECRET}" >> "$GITHUB_OUTPUT"
+          echo "[OK] Configured Pi Agent: provider=${PROVIDER}, model=${MODEL}, thinking=${THINKING}, commit_mode=${COMMIT_MODE} (key: ${EXPECTED_SECRET})"
+
+      - name: Checkout target repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Checkout JSI Build Verify Tooling & Bundled Skill
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.workflow_repo || 'jsoehner/jsi-build-verify' }}
+          ref: ${{ inputs.workflow_ref || 'main' }}
+          path: .jsi-verify-tools
+          persist-credentials: false
+
+      - name: Exclude temporary tooling checkout from target git status
+        shell: bash
+        run: |
+          mkdir -p .git/info
+          grep -qxF '.jsi-verify-tools/' .git/info/exclude 2>/dev/null || echo '.jsi-verify-tools/' >> .git/info/exclude
+
+      - name: Configure Trusted OSS Cache (mTLS) if TRUSTED_OSS_CACHE_URL is set
+        if: ${{ inputs.use_trusted_oss != false }}
+        shell: bash
+        env:
+          TRUSTED_OSS_CACHE_URL: ${{ vars.TRUSTED_OSS_CACHE_URL }}
+          TRUSTED_OSS_MODE: ${{ vars.TRUSTED_OSS_MODE || 'virtual' }}
+          TRUSTED_OSS_GPG_EMAIL: ${{ vars.TRUSTED_OSS_GPG_EMAIL || 'oss-signing@the-techy.com' }}
+          OSS_MTLS_CLIENT_CERT: ${{ secrets.OSS_MTLS_CLIENT_CERT }}
+          OSS_MTLS_CLIENT_KEY: ${{ secrets.OSS_MTLS_CLIENT_KEY }}
+        run: |
+          set -euo pipefail
+          CACHE_URL="${TRUSTED_OSS_CACHE_URL%/}"
+          if [[ -z "$CACHE_URL" ]]; then
+            echo "[INFO] vars.TRUSTED_OSS_CACHE_URL is unset; using public upstream OSS registries."
+            echo "TRUSTED_OSS_ACTIVE=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          if [[ -z "$OSS_MTLS_CLIENT_CERT" || -z "$OSS_MTLS_CLIENT_KEY" ]]; then
+            echo "::error title=Missing Trusted OSS mTLS Secrets::vars.TRUSTED_OSS_CACHE_URL is set to '${CACHE_URL}', but OSS_MTLS_CLIENT_CERT and/or OSS_MTLS_CLIENT_KEY secrets are missing. Configure them via trusted-oss-github-setup and pass 'secrets: inherit'."
+            exit 1
+          fi
+
+          mkdir -p ~/.m2 ~/.oss-tls
+          printf '%s\n' "$OSS_MTLS_CLIENT_CERT" > ~/.oss-tls/client.crt
+          printf '%s\n' "$OSS_MTLS_CLIENT_KEY" > ~/.oss-tls/client.key
+          cat ~/.oss-tls/client.crt ~/.oss-tls/client.key > ~/.oss-tls/client.pem
+          chmod 0600 ~/.oss-tls/client.key ~/.oss-tls/client.pem
+
+          HTTP_CODE="$(curl -sS -o /dev/null -w '%{http_code}' \
+            --cert ~/.oss-tls/client.crt --key ~/.oss-tls/client.key \
+            "${CACHE_URL}/healthz" || echo "000")"
+          if [[ "$HTTP_CODE" != "200" ]]; then
+            echo "::error title=Trusted OSS Registry Unreachable::Health check to ${CACHE_URL}/healthz returned HTTP ${HTTP_CODE}. Verify pfSense github_actions_cidrs allowlist and mTLS certificate validity."
+            exit 1
+          fi
+
+          curl -fsSL --cert ~/.oss-tls/client.crt --key ~/.oss-tls/client.key \
+            "${CACHE_URL}/keys/trusted-oss-pubkey.asc" -o ~/.oss-tls/trusted-oss-pubkey.asc
+          gpg --batch --import ~/.oss-tls/trusted-oss-pubkey.asc
+          if ! gpg --batch --list-keys --with-colons "$TRUSTED_OSS_GPG_EMAIL" | grep -q "^pub:"; then
+            echo "::error title=Trusted OSS GPG Mismatch::Imported Trusted OSS GPG key does not match expected identity: ${TRUSTED_OSS_GPG_EMAIL}"
+            exit 1
+          fi
+
+          openssl pkcs12 -export -in ~/.oss-tls/client.crt -inkey ~/.oss-tls/client.key \
+            -out ~/.oss-tls/client.p12 -passout pass:changeit
+          chmod 0600 ~/.oss-tls/client.p12
+
+          {
+            echo "TRUSTED_OSS_ACTIVE=true"
+            echo "TRUSTED_OSS_ENDPOINT=${CACHE_URL}"
+            echo "MAVEN_OPTS=-Djavax.net.ssl.keyStore=$HOME/.oss-tls/client.p12 -Djavax.net.ssl.keyStoreType=PKCS12 -Djavax.net.ssl.keyStorePassword=changeit"
+            echo "GRADLE_OPTS=-Djavax.net.ssl.keyStore=$HOME/.oss-tls/client.p12 -Djavax.net.ssl.keyStoreType=PKCS12 -Djavax.net.ssl.keyStorePassword=changeit"
+            echo "PIP_INDEX_URL=${CACHE_URL}/pypi/${TRUSTED_OSS_MODE}/simple"
+            echo "PIP_CLIENT_CERT=$HOME/.oss-tls/client.pem"
+            echo "UV_INDEX_URL=${CACHE_URL}/pypi/${TRUSTED_OSS_MODE}/simple"
+            echo "UV_NATIVE_TLS=true"
+          } >> "$GITHUB_ENV"
+
+          cat > ~/.m2/settings.xml <<EOF
+          <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">
+            <mirrors>
+              <mirror>
+                <id>trusted-oss-harbor</id>
+                <url>${CACHE_URL}/maven/${TRUSTED_OSS_MODE}</url>
+                <mirrorOf>*</mirrorOf>
+              </mirror>
+            </mirrors>
+          </settings>
+          EOF
+          echo "[OK] Trusted OSS mTLS configured for ${CACHE_URL} (mode: ${TRUSTED_OSS_MODE})"
+
+      - name: Setup Node.js 22 for Pi Agent
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Install Pi Coding Agent
+        shell: bash
+        run: |
+          npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+          pi --version
+
+      - name: Run Pi Verification Agent (jeffs-automated-build-deploy-agent)
+        id: pi_run
+        shell: bash
+        env:
+          PI_PROVIDER: ${{ steps.config.outputs.provider }}
+          PI_MODEL: ${{ steps.config.outputs.model }}
+          PI_THINKING: ${{ steps.config.outputs.thinking }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          PI_API_KEY: ${{ secrets.PI_API_KEY }}
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/jsi-verify
+
+          SKILL_DIR="$GITHUB_WORKSPACE/.jsi-verify-tools/skills/jeffs-automated-build-deploy-agent"
+          API_KEY_ARGS=()
+          if [[ -n "${PI_API_KEY:-}" ]]; then
+            API_KEY_ARGS=(--api-key "$PI_API_KEY")
+          fi
+
+          SYS_PROMPT_ARGS=()
+          if [[ -f "$GITHUB_WORKSPACE/.jsi-verify-tools/AGENTS.md" ]]; then
+            SYS_PROMPT_ARGS+=(--append-system-prompt "$GITHUB_WORKSPACE/.jsi-verify-tools/AGENTS.md")
+          fi
+          if [[ -d "$GITHUB_WORKSPACE/.jsi-verify-tools/rules" ]]; then
+            for rule_file in "$GITHUB_WORKSPACE"/.jsi-verify-tools/rules/*.md; do
+              if [[ -f "$rule_file" ]]; then
+                SYS_PROMPT_ARGS+=(--append-system-prompt "$rule_file")
+              fi
+            done
+          fi
+
+          PROMPT="$(cat <<EOF
+          You are running inside GitHub Actions CI for repository ${GITHUB_REPOSITORY} (checked out at ${GITHUB_WORKSPACE}).
+          Follow the loaded jeffs-automated-build-deploy-agent skill in SINGLE-REPOSITORY CI MODE:
+
+          1. Skip Step 0 (discover_top_repos.py) and Step 1 (git clone/pull) because the target repo is already checked out at ${GITHUB_WORKSPACE} and fork guardrails are enforced by the workflow.
+          2. Skip Step 2 local LAN setup: if TRUSTED_OSS_ACTIVE=true, mTLS and registry env vars (MAVEN_OPTS, GRADLE_OPTS, PIP_INDEX_URL, PIP_CLIENT_CERT, UV_INDEX_URL, ~/.m2/settings.xml, ~/.oss-tls/client.crt|key|pem) are ALREADY configured for ${TRUSTED_OSS_ENDPOINT:-public registries}. Do NOT use http://oss.jsigroup.local:8080.
+          3. Execute Step 3 (Manifest-First Stack Detection & Workarounds) and Step 4 (Functional Verification: unit/integration tests, guided headless Chrome via ${SKILL_DIR}/scripts/browser_verify.py saving screenshots to /tmp/jsi-verify/, and curl API probes via ${SKILL_DIR}/scripts/api_verify.py).
+          4. Execute Step 5 (Verification-Gated Documentation Update) ONLY if the project builds and passes functional verification:
+             - Create/update docs/BUILD_VERIFICATION.md (dated $(date -u +%F), attributed to "Jeffs' Automated build and deploy agent" running via Pi Agent in GitHub Actions) and add/update the verification badge/link in README.md.
+             - Do NOT run git commit or git push — the workflow handles committing/PR creation after verifying git hygiene.
+             - If the build or verification fails (e.g., genuine CVE 451 block, test failure, missing platform), do NOT modify README.md or docs/BUILD_VERIFICATION.md; explain the exact root cause and remediation clearly in your final response.
+          5. Execute Step 6 (Cleanup): stop any background servers/containers and remove any untracked temporary files in the repository root.
+          EOF
+          )"
+
+          pi \
+            --mode json \
+            --no-session \
+            --no-extensions \
+            --no-mcp \
+            --no-approve \
+            --no-skills \
+            --skill "$SKILL_DIR" \
+            --provider "$PI_PROVIDER" \
+            --model "$PI_MODEL" \
+            --thinking "$PI_THINKING" \
+            "${SYS_PROMPT_ARGS[@]}" \
+            "${API_KEY_ARGS[@]}" \
+            "$PROMPT" > /tmp/jsi-verify/pi-events.jsonl 2> /tmp/jsi-verify/pi-stderr.log
+          PI_EXIT=$?
+
+          echo "exit_code=${PI_EXIT}" >> "$GITHUB_OUTPUT"
+          if [[ -s /tmp/jsi-verify/pi-stderr.log ]]; then
+            echo "--- Pi stderr ---"
+            cat /tmp/jsi-verify/pi-stderr.log
+          fi
+          exit "$PI_EXIT"
+
+      - name: Report Token Consumption & Verification Summary
+        id: usage
+        if: always()
+        shell: bash
+        run: |
+          python3 "$GITHUB_WORKSPACE/.jsi-verify-tools/scripts/summarize_pi_usage.py" \
+            /tmp/jsi-verify/pi-events.jsonl \
+            --provider "${{ steps.config.outputs.provider }}" \
+            --model "${{ steps.config.outputs.model }}" \
+            --exit-code "${{ steps.pi_run.outputs.exit_code || 1 }}" \
+            --json-out /tmp/jsi-verify/token-usage.json \
+            --md-out /tmp/jsi-verify/token-usage.md
+
+      - name: Publish Verification Documentation (Gated & Hygiene-Checked)
+        if: ${{ steps.pi_run.outcome == 'success' && steps.config.outputs.commit_mode != 'report-only' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_MODE: ${{ steps.config.outputs.commit_mode }}
+          TOTAL_TOKENS: ${{ steps.usage.outputs.total_tokens || '0' }}
+          EST_COST: ${{ steps.usage.outputs.estimated_cost_usd || '0' }}
+        run: |
+          set -euo pipefail
+          CHANGED="$(git status --porcelain -- docs/BUILD_VERIFICATION.md README.md)"
+          if [[ -z "$CHANGED" ]]; then
+            echo "[INFO] No verification documentation updates detected; skipping commit/PR."
+            exit 0
+          fi
+
+          # Ensure zero unintended/sensitive files are staged
+          git add -- docs/BUILD_VERIFICATION.md README.md 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "[INFO] No staged changes in docs/BUILD_VERIFICATION.md or README.md."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          TODAY="$(date -u +%F)"
+          COMMIT_MSG="docs(verification): record ${TODAY} functional build verification [skip ci]"
+
+          if [[ "$COMMIT_MODE" == "direct" ]]; then
+            git commit -m "$COMMIT_MSG"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          else
+            BRANCH="docs/jsi-build-verify"
+            git checkout -B "$BRANCH"
+            git commit -m "$COMMIT_MSG"
+            git push --force-with-lease origin "$BRANCH"
+
+            PR_BODY="$(cat /tmp/jsi-verify/token-usage.md 2>/dev/null || echo "Automated verification completed on ${TODAY}.")"
+            if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+              gh pr edit "$BRANCH" --title "docs(verification): ${TODAY} functional build verification" --body "$PR_BODY"
+            else
+              gh pr create \
+                --base "${GITHUB_REF_NAME}" \
+                --head "$BRANCH" \
+                --title "docs(verification): ${TODAY} functional build verification" \
+                --body "$PR_BODY"
+            fi
+          fi
+
+      - name: Upload Verification & Token Usage Artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: jsi-build-verify-${{ github.run_id }}
+          path: |
+            /tmp/jsi-verify/token-usage.json
+            /tmp/jsi-verify/token-usage.md
+            /tmp/jsi-verify/pi-events.jsonl
+            /tmp/jsi-verify/*.png
+            docs/BUILD_VERIFICATION.md
+          if-no-files-found: ignore
+          retention-days: 30
