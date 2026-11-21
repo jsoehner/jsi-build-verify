@@ -67,3 +67,25 @@ def test_skill_frontmatter_and_bundled_scripts() -> None:
     frontmatter = yaml.safe_load(text.split("---", 2)[1])
     assert frontmatter["name"] == "jeffs-automated-build-deploy-agent"
     assert frontmatter["description"]
+
+
+def test_readme_caller_snippets_match_required_permissions() -> None:
+    wf = _load_workflow()
+    required_perms = wf.get("permissions", {})
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    yaml_blocks = re.findall(r"```yaml\n(.*?)\n```", readme, re.DOTALL)
+    caller_blocks = [b for b in yaml_blocks if "jsi-build-verify.yml@" in b]
+    assert caller_blocks, "Expected at least one caller workflow YAML snippet in README.md"
+    for block in caller_blocks:
+        parsed = yaml.safe_load(block)
+        perms = parsed.get("permissions", {})
+        for key, value in required_perms.items():
+            assert perms.get(key) == value, (
+                f"README caller snippet missing required permission {key}: {value} (got {perms.get(key)!r})"
+            )
+
+
+def test_default_google_model_is_not_deprecated() -> None:
+    wf_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert 'google)     MODEL="gemini-2.5-pro"' not in wf_text
+    assert 'google)     MODEL="gemini-3.1-pro-preview"' in wf_text

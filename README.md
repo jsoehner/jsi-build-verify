@@ -95,6 +95,7 @@ jobs:
 name: Functional Verification
 on:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -102,13 +103,25 @@ permissions:
 
 jobs:
   verify:
-    uses: jsoehner/jsi-build-verify/.github/workflows/jsi-build-verify.yml@main
+    uses: jsoehner/jsi-build-verify/.github/workflows/jsi-build-verify.yml@v1.0.0
     with:
+      workflow_ref: v1.0.0
       commit_mode: report-only
       fail_on_error: true
       comment_on_pr: true
     secrets: inherit
 ```
+
+> [!TIP]
+> **SHA-Pinning for Supply-Chain Integrity:** When pinning to an immutable 40-character commit SHA (e.g., `uses: jsoehner/jsi-build-verify/.github/workflows/jsi-build-verify.yml@<SHA>`), also pass `workflow_ref: <SHA>` under `with:` so the bundled tooling checkout (`.jsi-verify-tools/`) is pinned to the exact same commit rather than floating on `main`.
+
+### End-to-End Onboarding Checklist
+
+1. **Visibility:** Ensure `jsoehner/jsi-build-verify` is **public** (personal private repos cannot share reusable workflows).
+2. **Secret:** Add `GEMINI_API_KEY` (or your chosen provider's secret + `PI_PROVIDER`/`PI_MODEL` repo variables) in the target repo's Actions secrets.
+3. **Permissions:** Ensure the caller workflow grants `contents: write` and `pull-requests: write` (GitHub rejects callers with `contents: read` at startup because the reusable workflow declares `contents: write`).
+4. **Draft PR Smoke Test:** Add `.github/workflows/verify.yml` in `commit_mode: report-only` with `comment_on_pr: true` on a branch and open a draft PR to verify zero-config detection, verdict gating, and token usage.
+5. **Consolidate & Pin:** Retire any redundant legacy build/smoke workflows replaced by `verify.yml`, add an ADR if your repo enforces `adr-gatekeeper`, and pin `uses:` + `workflow_ref:` to a release tag or commit SHA before merging.
 
 > [!IMPORTANT]
 > Because the agent executes build/test commands with `--no-approve` and has access to configured LLM secrets, only run `pull_request` triggers on trusted repositories (forked PRs are automatically skipped by the workflow guardrail).
