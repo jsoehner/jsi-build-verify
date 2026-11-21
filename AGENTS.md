@@ -8,6 +8,9 @@ This repository (`jsi-build-verify`) provides a self-contained reusable GitHub A
 - **Structured Verdict Required (CI Mode)**: Always write `/tmp/jsi-verify/verdict.json` with `status` (`"pass"`, `"fail"`, or `"blocked"`), `summary`, `checks`, and `failure_reason` (empty on pass) before exiting.
 - **Verification-Gated Docs**: Only create or update `docs/BUILD_VERIFICATION.md` and `README.md` when verification genuinely passes. Never run `git commit` or `git push` inside GitHub Actions — the workflow handles git publishing.
 - **Secret & Git Hygiene**: Never commit `.env`, private keys (`*.key`, `*.pem`, `*.p12`), local registry configs, or temporary verification files. Clean up background servers and temporary files before exiting.
+- **Secret-Scanner-Safe Verification Docs**: Summarize crypto/API verification results in plain prose (avoiding `key: "high-entropy"` JSON fragments that trigger Gitleaks false positives); `scripts/check_doc_hygiene.py` runs in the `Check for Gitleaks FPs` step before publishing docs.
+- **Release Tagging for Dependabot**: Every commit pushed to `main` in this repository must be tagged with a new semantic version (`vX.Y.Z`) and published as a GitHub Release so Dependabot opens update PRs in consumer repositories.
+- **Public Repo Cleanliness**: Do not add local-only helper scripts (such as `skills-backup` sync scripts) to this public action repository.
 - **Fork Guardrail**: Never apply unilateral updates to forked repositories unless upstream is verified abandoned; in GitHub Actions CI, fork execution is blocked by the workflow.
 
 ## Repository Layout
