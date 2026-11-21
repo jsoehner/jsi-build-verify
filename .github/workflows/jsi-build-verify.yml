@@ -9,7 +9,7 @@ on:
         type: string
         default: ""
       model:
-        description: "Pi model ID (e.g. gemini-2.5-pro, gemini-2.5-flash, claude-sonnet-4-5, gpt-5). Falls back to vars.PI_MODEL, then 'gemini-2.5-pro' for google."
+        description: "Pi model ID (e.g. gemini-3.1-pro-preview, gemini-2.5-flash, claude-sonnet-4-5, gpt-5). Falls back to vars.PI_MODEL, then 'gemini-3.1-pro-preview' for google."
         required: false
         type: string
         default: ""
@@ -155,7 +155,7 @@ on:
           - groq
           - xai
       model:
-        description: "Pi model ID (leave blank for provider default, e.g. gemini-2.5-pro)"
+        description: "Pi model ID (leave blank for provider default, e.g. gemini-3.1-pro-preview)"
         required: false
         type: string
         default: ""
@@ -258,10 +258,10 @@ jobs:
           MODEL="${INPUT_MODEL:-${VAR_MODEL:-}}"
           if [[ -z "$MODEL" ]]; then
             case "$PROVIDER" in
-              google)     MODEL="gemini-2.5-pro" ;;
+              google)     MODEL="gemini-3.1-pro-preview" ;;
               anthropic)  MODEL="claude-sonnet-4-5" ;;
               openai)     MODEL="gpt-5" ;;
-              openrouter) MODEL="google/gemini-2.5-pro" ;;
+              openrouter) MODEL="google/gemini-3.1-pro-preview" ;;
               deepseek)   MODEL="deepseek-chat" ;;
               mistral)    MODEL="mistral-large-latest" ;;
               groq)       MODEL="llama-3.3-70b-versatile" ;;

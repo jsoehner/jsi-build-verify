@@ -26,7 +26,7 @@ Traditional CI pipelines require custom per-repository build, start, and smoke-t
 1. **Fork & Loop Guardrail**: The `verify` job runs only when `!github.event.repository.fork` and `github.actor != 'github-actions[bot]'`.
 2. **Provider, Model & Fail-Fast Secret Gate**:
    - Resolves provider in order: `inputs.provider` → `vars.PI_PROVIDER` → **`google`** (Gemini; `gemini` is normalized to `google`).
-   - Resolves model in order: `inputs.model` → `vars.PI_MODEL` → provider default (**`gemini-2.5-pro`** for `google`).
+   - Resolves model in order: `inputs.model` → `vars.PI_MODEL` → provider default (**`gemini-3.1-pro-preview`** for `google`).
    - Verifies that the matching API key secret (`GEMINI_API_KEY` by default, or the selected provider's secret / generic `PI_API_KEY`) is populated. If missing, the job **immediately fails** with an `::error::` annotation and a Step Summary explaining how to configure the secret before any runner time is spent installing tools.
 3. **Target & Self-Contained Tooling Checkout**:
    - Checks out the calling repository (`fetch-depth: 0`) and this self-contained repository (`AGENTS.md`, `rules/`, `skills/jeffs-automated-build-deploy-agent/`, and `scripts/summarize_pi_usage.py`) into `.jsi-verify-tools/` (added to `.git/info/exclude` so it never pollutes `git status`). No external skill repository is required.
@@ -82,7 +82,7 @@ jobs:
   verify:
     uses: jsoehner/jsi-build-verify/.github/workflows/jsi-build-verify.yml@main
     with:
-      # Optional: override provider/model (defaults: google / gemini-2.5-pro)
+      # Optional: override provider/model (defaults: google / gemini-3.1-pro-preview)
       # provider: anthropic
       # model: claude-sonnet-4-5
       commit_mode: pr
@@ -97,7 +97,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
 
 jobs:
@@ -137,7 +137,7 @@ checks:
 | Input | Default | Description |
 | :--- | :--- | :--- |
 | `provider` | `""` (`vars.PI_PROVIDER` → `google`) | Pi LLM provider (`google`, `anthropic`, `openai`, `openrouter`, `deepseek`, `mistral`, `groq`, `xai`). |
-| `model` | `""` (`vars.PI_MODEL` → provider default) | Model ID (default for `google`: `gemini-2.5-pro`). |
+| `model` | `""` (`vars.PI_MODEL` → provider default) | Model ID (default for `google`: `gemini-3.1-pro-preview`). |
 | `thinking` | `medium` | Pi reasoning level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). |
 | `commit_mode` | `pr` | Verified doc handling: `pr`, `direct`, or `report-only`. |
 | `fail_on_error` | `true` | Fail the workflow job when `verification_status != 'pass'`. |
