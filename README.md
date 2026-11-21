@@ -8,7 +8,7 @@
 A self-contained reusable GitHub Actions workflow that runs the **`jeffs-automated-build-deploy-agent`** skill via the headless **Pi Coding Agent** (`@earendil-works/pi-coding-agent`) on GitHub-hosted runners for any repository.
 
 > [!WARNING]
-> **Cost of Operation:** Because this workflow invokes an LLM API (default `google` / `gemini-3.1-pro-preview`) once you configure your API key secret (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.), **every triggered run incurs real LLM API charges**. Observed end-to-end verification costs range from **~$0.23/run** (Rust/WASM, ~278k tokens) to **~$0.40/run** (Node.js/Express + API + browser checks, ~460k tokens). To control spend, consider using `model: gemini-2.5-flash` with `thinking: low`, triggering via `workflow_dispatch` only on high-churn repos, and setting API provider spend caps.
+> **Cost of Operation:** Because this workflow invokes an LLM API (default `google` / `gemini-3.1-pro-preview`) once you configure your API key secret (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.), **every triggered run incurs real LLM API charges**. Observed end-to-end verification costs range from **~$0.23/run** (Rust/WASM, ~278k tokens) to **~$0.40/run** (Node.js/Express + API + browser checks, ~460k tokens). To control spend, switch to `model: gemini-2.5-flash` with `thinking: low`, trigger via `workflow_dispatch` only on high-churn repos, and set API provider spend caps — see the 3-step guide in **[docs/COST_CONTROL.md](docs/COST_CONTROL.md)**.
 
 ---
 
@@ -130,6 +130,35 @@ jobs:
 
 > [!TIP]
 > **SHA-Pinning for Supply-Chain Integrity:** When pinning to an immutable 40-character commit SHA (e.g., `uses: jsoehner/jsi-build-verify/.github/workflows/jsi-build-verify.yml@<SHA>`), also pass `workflow_ref: <SHA>` under `with:` so the bundled tooling checkout (`.jsi-verify-tools/`) is pinned to the exact same commit rather than floating on `main`.
+
+### Low-Cost / On-Demand Mode (Recommended for High-Churn Repos)
+
+Run verification only when manually triggered, using a faster/cheaper model and low reasoning (see [docs/COST_CONTROL.md](docs/COST_CONTROL.md) for provider spend caps and quota setup):
+
+```yaml
+name: JSI Build & Functional Verification
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  verify:
+    uses: jsoehner/jsi-build-verify/.github/workflows/jsi-build-verify.yml@v1.0.1
+    with:
+      workflow_ref: v1.0.1
+      model: gemini-2.5-flash
+      thinking: low
+      commit_mode: report-only
+      fail_on_error: true
+      comment_on_pr: false
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      OSS_MTLS_CLIENT_CERT: ${{ secrets.OSS_MTLS_CLIENT_CERT }}
+      OSS_MTLS_CLIENT_KEY: ${{ secrets.OSS_MTLS_CLIENT_KEY }}
+```
 
 ### End-to-End Onboarding Checklist
 
